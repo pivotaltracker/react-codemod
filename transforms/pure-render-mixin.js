@@ -156,11 +156,14 @@ function removePureRenderMixin(file, api, options) {
       );
     } else {
       // Let's assume the variable declaration happens at the top level
-      const program = declaration.closest(j.Program).get();
-      const body = program.value.body;
-      const index = body.indexOf(declaration.get().value);
-      if (index !== -1) {
-        body.splice(index, 1);
+      const closest = declaration.closest(j.Program);
+      if (closest.length) { // HACKY FIX TO MAKE THE SCRIPT NOT BLOW UP
+        const program = closest.get();
+        const body = program.value.body;
+        const index = body.indexOf(declaration.get().value);
+        if (index !== -1) {
+          body.splice(index, 1);
+        }
       }
     }
   };

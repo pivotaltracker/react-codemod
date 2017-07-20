@@ -131,6 +131,14 @@ module.exports = (file, api, options) => {
     node.value.type === 'FunctionExpression'
   );
 
+  const isSimpleFatArrowExpression = node => (
+    node.key &&
+    node.key.type === 'Identifier' &&
+    node.value &&
+    node.value.type === 'ArrowFunctionExpression' &&
+    j(node).find(j.ThisExpression).length === 0
+  );
+
   const isPrimProperty = prop => (
     prop.key &&
     prop.key.type === 'Identifier' &&
@@ -304,6 +312,7 @@ module.exports = (file, api, options) => {
         !filterDefaultPropsField(prop) &&
         !filterGetInitialStateField(prop) &&
         !isFunctionExpression(prop) &&
+        !isSimpleFatArrowExpression(prop) &&
         !isPrimProperty(prop) &&
         !isPrimPropertyWithTypeAnnotation(prop) &&
         MIXIN_KEY != prop.key.name
@@ -386,7 +395,8 @@ module.exports = (file, api, options) => {
     .filter(prop =>
       isFunctionExpression(prop) ||
       isPrimPropertyWithTypeAnnotation(prop) ||
-      isPrimProperty(prop)
+      isPrimProperty(prop) ||
+      isSimpleFatArrowExpression(prop)
     );
 
   const findRequirePathAndBinding = (moduleName) => {
@@ -430,11 +440,21 @@ module.exports = (file, api, options) => {
 
   // ---------------------------------------------------------------------------
   // Boom!
+  const blockStatement = body =>
+    body.type === 'BlockStatement' ?
+      body :
+      j.blockStatement([j.returnStatement(body)]);
+
+  const arrowToNormal = fn =>
+    fn.value.type === 'FunctionExpression' ?
+      fn.value :
+      j.functionExpression(null, fn.value.params, blockStatement(fn.value.body));
+
   const createMethodDefinition = fn =>
     withComments(j.methodDefinition(
       'method',
       fn.key,
-      fn.value
+      arrowToNormal(fn)
     ), fn);
 
   const updatePropsAndContextAccess = getInitialState => {
@@ -465,6 +485,19 @@ module.exports = (file, api, options) => {
   const inlineGetInitialState = getInitialState => {
     const functionExpressionCollection = j(getInitialState.value);
 
+    const stateAssignment = value =>
+      j.expressionStatement(
+        j.assignmentExpression(
+          '=',
+          j.memberExpression(
+            j.thisExpression(),
+            j.identifier('state'),
+            false
+          ),
+          value
+        )
+      );
+
     // at this point if there exists bindings like `const props = ...`, we
     // already know the RHS must be `this.props` (see `isGetInitialStateConstructorSafe`)
     // so it's safe to just remove them
@@ -474,7 +507,7 @@ module.exports = (file, api, options) => {
     functionExpressionCollection.find(j.VariableDeclarator, {id: {name: 'context'}})
       .forEach(path => j(path).remove());
 
-    return functionExpressionCollection
+    const returnStatementCollection = functionExpressionCollection
       .find(j.ReturnStatement)
       .filter(path => {
         // filter out inner function declarations here (helper functions, promises, etc.).
@@ -502,22 +535,15 @@ module.exports = (file, api, options) => {
           shouldInsertReturnAfterAssignment = true;
         }
 
-        j(path).replaceWith(j.expressionStatement(
-          j.assignmentExpression(
-            '=',
-            j.memberExpression(
-              j.thisExpression(),
-              j.identifier('state'),
-              false
-            ),
-            path.value.argument
-          )
-        ));
+        j(path).replaceWith(stateAssignment(path.value.argument));
 
         if (shouldInsertReturnAfterAssignment) {
           j(path).insertAfter(j.returnStatement(null));
         }
       }).getAST()[0].value.body.body;
+
+    return returnStatementCollection ||
+      stateAssignment(functionExpressionCollection.get().value.body);
   };
 
   const convertInitialStateToClassProperty = getInitialState =>
